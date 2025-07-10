@@ -1,12 +1,28 @@
-from pydantic import BaseModel, Field, EmailStr
-from typing import Optional, List
+from pydantic import BaseModel, Field, EmailStr, ConfigDict
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import core_schema
+from typing import Optional, List, Any
 from datetime import datetime
 from bson import ObjectId
 
 class PyObjectId(ObjectId):
     @classmethod
-    def __get_validators__(cls):
-        yield cls.validate
+    def __get_pydantic_core_schema__(
+        cls, source_type: Any, handler
+    ) -> core_schema.CoreSchema:
+        return core_schema.json_or_python_schema(
+            json_schema=core_schema.str_schema(),
+            python_schema=core_schema.union_schema([
+                core_schema.is_instance_schema(ObjectId),
+                core_schema.chain_schema([
+                    core_schema.str_schema(),
+                    core_schema.no_info_plain_validator_function(cls.validate),
+                ])
+            ]),
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                lambda x: str(x)
+            ),
+        )
 
     @classmethod
     def validate(cls, v):
@@ -15,8 +31,10 @@ class PyObjectId(ObjectId):
         return ObjectId(v)
 
     @classmethod
-    def __modify_schema__(cls, field_schema):
-        field_schema.update(type="string")
+    def __get_pydantic_json_schema__(
+        cls, schema: core_schema.CoreSchema, handler
+    ) -> JsonSchemaValue:
+        return {"type": "string"}
 
 class UserStats(BaseModel):
     blogs: int = 0
@@ -38,7 +56,7 @@ class UserBase(BaseModel):
     avatar: Optional[str] = ""
 
 class UserCreate(UserBase):
-    clerk_id: str
+    pass
 
 class UserUpdate(BaseModel):
     name: Optional[str] = None
@@ -47,24 +65,24 @@ class UserUpdate(BaseModel):
     avatar: Optional[str] = None
 
 class User(UserBase):
-    id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
-    clerk_id: str
+    id: str = Field(alias="_id")  # Accept string IDs (Clerk IDs) or ObjectIds
     stats: UserStats = Field(default_factory=UserStats)
     achievements: List[Achievement] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-    class Config:
-        allow_population_by_field_name = True
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str}
-        schema_extra = {
+    model_config = ConfigDict(
+        populate_by_name=True,
+        arbitrary_types_allowed=True,
+        json_encoders={ObjectId: str},
+        json_schema_extra={
             "example": {
+                "_id": "user_2NNEqL2nrIRdJ8q3",  # Example Clerk user ID
                 "name": "Alex Morgan",
                 "username": "alexdesign",
                 "email": "alex@example.com",
                 "bio": "UI/UX Designer with 10+ years experience",
-                "avatar": "https://example.com/avatar.jpg",
-                "clerk_id": "user_123456"
+                "avatar": "https://example.com/avatar.jpg"
             }
-        } 
+        }
+    ) 

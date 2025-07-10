@@ -18,7 +18,8 @@ async def connect_to_mongo():
     
     db.client = AsyncIOMotorClient(
         mongodb_uri,
-        server_api=ServerApi('1')
+        server_api=ServerApi('1'),
+        tlsAllowInvalidCertificates=True  # Bypass SSL certificate verification
     )
     db.database = db.client[database_name]
     

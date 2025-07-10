@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 from bson import ObjectId
@@ -35,19 +35,19 @@ class Blog(BlogBase):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-    class Config:
-        allow_population_by_field_name = True
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str}
-        schema_extra = {
+    model_config = ConfigDict(
+        populate_by_name=True,
+        arbitrary_types_allowed=True,
+        json_encoders={ObjectId: str},
+        json_schema_extra={
             "example": {
                 "title": "The Art of Minimalist Design",
                 "excerpt": "Exploring how less becomes more in modern UI/UX design philosophy.",
                 "content": "<p>Minimalism in design isn't just about using fewer elements...</p>",
-                "category": "Design",
-                "author_id": "user_123456"
+                "category": "Design"
             }
         }
+    )
 
 class BlogResponse(BaseModel):
     id: str
@@ -60,8 +60,8 @@ class BlogResponse(BaseModel):
     timestamp: str
     is_upvoted: bool = False
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": "64a7b8c9d1e2f3a4b5c6d7e8",
                 "title": "The Art of Minimalist Design",
@@ -69,7 +69,7 @@ class BlogResponse(BaseModel):
                 "content": "<p>Minimalism in design isn't just about using fewer elements...</p>",
                 "category": "Design",
                 "author": {
-                    "id": "user_123456",
+                    "id": "64a7b8c9d1e2f3a4b5c6d7e8",
                     "name": "Alex Morgan",
                     "username": "alexdesign",
                     "avatar": "https://example.com/avatar.jpg",
@@ -79,4 +79,5 @@ class BlogResponse(BaseModel):
                 "timestamp": "2 days ago",
                 "is_upvoted": False
             }
-        } 
+        }
+    ) 

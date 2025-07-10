@@ -5,7 +5,7 @@ import os
 from dotenv import load_dotenv
 
 from app.database import connect_to_mongo, close_mongo_connection
-from app.routers import auth, users, blogs, communities
+from app.routers import users, blogs, communities
 
 load_dotenv()
 
@@ -19,7 +19,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Glass Scribe Verse API",
-    description="Backend API for Glass Scribe Verse - A blog and community platform",
+    description="Backend API for Glass Scribe Verse - A blog and community platform (No Auth)",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -27,14 +27,19 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:5173")],
+    allow_origins=[
+        "http://localhost:8081",  # Frontend URL
+        "http://localhost:3000",  # React default port  
+        "http://localhost:5173",  # Vite default port
+        "http://localhost:8000",  # Backend URL (for docs)
+        # Add other origins as needed
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Include routers
-app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])
 app.include_router(blogs.router, prefix="/api/blogs", tags=["blogs"])
 app.include_router(communities.router, prefix="/api/communities", tags=["communities"])
@@ -51,7 +56,7 @@ if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
         "main:app", 
-        host="0.0.0.0", 
+        host="localhost", 
         port=int(os.getenv("PORT", 8000)), 
         reload=True
     ) 
