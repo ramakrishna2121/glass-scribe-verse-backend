@@ -1,3 +1,4 @@
+
 # Glass Scribe Verse Backend
 
 A FastAPI backend for a blogging and community platform with MongoDB database.
@@ -232,3 +233,4 @@ glass-scribe-verse-backend/
 ├── requirements.txt     # Dependencies
 └── README.md           # This file
 ```
+
