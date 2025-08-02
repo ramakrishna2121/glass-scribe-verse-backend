@@ -267,4 +267,12 @@ node_modules/
 # Debug files
 debug_*.py
 test_*.py
-scratch_*.py 
+scratch_*.py
+
+# Upload directories
+uploads/
+/uploads
+
+# Static files
+static/
+/static 

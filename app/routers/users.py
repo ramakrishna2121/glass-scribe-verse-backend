@@ -1,12 +1,64 @@
-from fastapi import APIRouter, HTTPException, status, Query, Header
+from fastapi import APIRouter, HTTPException, status, Query, Header, File, UploadFile
 from app.database import get_database
 from app.models.user import UserCreate, UserUpdate, User
+from app.models.presence import PresenceUpdate, PresenceResponse, CommunityPresenceResponse, PresenceStatus
 from app.utils.helpers import convert_objectid_to_str, format_timestamp
 from typing import Optional, List
 from datetime import datetime
 from bson import ObjectId
+import secrets
+from firebase_admin import storage as fb_storage
 
 router = APIRouter()
+
+# USER AVATAR UPLOAD ENDPOINT
+
+@router.post("/upload/avatar")
+async def upload_user_avatar(
+    file: UploadFile = File(...),
+    x_user_id: str = Header(..., description="User ID from Clerk (frontend)")
+):
+    """Upload user avatar image to Firebase Storage"""
+    allowed_types = ["image/jpeg", "image/png", "image/jpg", "image/webp"]
+    if file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only JPEG, PNG, JPG, and WebP images are allowed"
+        )
+    
+    content = await file.read()
+    file_size = len(content)
+    if file_size > 5 * 1024 * 1024:  # 5MB limit for avatars
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File size must be less than 5MB"
+        )
+    
+    # Verify user exists
+    db = await get_database()
+    user = await db.users.find_one({"_id": x_user_id})
+    if not user and ObjectId.is_valid(x_user_id):
+        user = await db.users.find_one({"_id": ObjectId(x_user_id)})
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Upload to Firebase Storage
+    bucket = fb_storage.bucket()
+    file_extension = file.filename.split(".")[-1]
+    unique_filename = f"user_avatars/{secrets.token_hex(16)}.{file_extension}"
+    blob = bucket.blob(unique_filename)
+    blob.upload_from_string(content, content_type=file.content_type)
+    blob.make_public()
+    file_url = blob.public_url
+    
+    return {
+        "url": file_url,
+        "filename": unique_filename,
+        "size": file_size
+    }
 
 @router.get("")
 async def get_users(
@@ -66,6 +118,94 @@ async def get_my_profile(
     
     db = await get_database()
     return await _get_profile_data(x_user_id, db)
+
+@router.get("/me/communities")
+async def get_my_communities(
+    x_user_id: str = Header(..., description="User ID from Clerk (frontend)"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=50),
+    membership_type: Optional[str] = Query("joined", regex="^(created|joined|all)$"),
+    order_by: Optional[str] = Query("newest", description="Sort order: newest, oldest, most_members, least_members, alphabetical, alphabetical_desc")
+):
+    """Get current user's communities (joined by default) with sorting options"""
+    # Validate Clerk user ID from header
+    if not x_user_id or len(x_user_id.strip()) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID from header"
+        )
+    
+    db = await get_database()
+    
+    # Find user by string ID first (Clerk ID), then by ObjectId if needed
+    user = await db.users.find_one({"_id": x_user_id})
+    if not user and ObjectId.is_valid(x_user_id):
+        user = await db.users.find_one({"_id": ObjectId(x_user_id)})
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    skip = (page - 1) * per_page
+    
+    # Use the actual user ID from database for queries
+    actual_user_id = str(user["_id"])
+    
+    # Build filter based on membership type
+    if membership_type == "created":
+        filter_query = {"creator_id": actual_user_id}
+    elif membership_type == "joined":
+        filter_query = {"members": actual_user_id, "creator_id": {"$ne": actual_user_id}}
+    else:  # "all"
+        filter_query = {"members": actual_user_id}
+    
+    # Build sort criteria
+    sort_mapping = {
+        "newest": ("created_at", -1),
+        "oldest": ("created_at", 1),
+        "most_members": ("member_count", -1),
+        "least_members": ("member_count", 1),
+        "alphabetical": ("name", 1),
+        "alphabetical_desc": ("name", -1)
+    }
+    
+    # Default to newest if invalid order_by provided
+    if order_by not in sort_mapping:
+        order_by = "newest"
+    
+    sort_field, sort_direction = sort_mapping[order_by]
+    
+    communities = await db.communities.find(filter_query)\
+        .sort(sort_field, sort_direction)\
+        .skip(skip)\
+        .limit(per_page)\
+        .to_list(per_page)
+    
+    total_count = await db.communities.count_documents(filter_query)
+    
+    # Add user's role in each community and format timestamps
+    for community in communities:
+        community["user_role"] = "admin" if community["creator_id"] == actual_user_id else "member"
+        community["created_at"] = format_timestamp(community["created_at"])
+        
+        # Add member count
+        community["member_count"] = len(community.get("members", []))
+    
+    return {
+        "communities": convert_objectid_to_str(communities),
+        "total": total_count,
+        "page": page,
+        "per_page": per_page,
+        "user": {
+            "id": actual_user_id,
+            "name": user["name"],
+            "username": user.get("username", "")
+        },
+        "membership_type": membership_type,
+        "order_by": order_by
+    }
 
 @router.get("/profile")
 async def get_user_profile(
@@ -439,9 +579,10 @@ async def get_user_communities(
     user_id: str,
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1, le=50),
-    membership_type: Optional[str] = Query(None, regex="^(created|joined|all)$")
+    membership_type: Optional[str] = Query(None, regex="^(created|joined|all)$"),
+    order_by: Optional[str] = Query("newest", description="Sort order: newest, oldest, most_members, least_members, alphabetical, alphabetical_desc")
 ):
-    """Get communities associated with a user (created or joined)"""
+    """Get communities associated with a user (created or joined) with sorting options"""
     db = await get_database()
     
     # Find user by string ID first (Clerk ID), then by ObjectId if needed
@@ -468,8 +609,24 @@ async def get_user_communities(
     else:  # "all" or None
         filter_query = {"members": actual_user_id}
     
+    # Build sort criteria
+    sort_mapping = {
+        "newest": ("created_at", -1),
+        "oldest": ("created_at", 1),
+        "most_members": ("member_count", -1),
+        "least_members": ("member_count", 1),
+        "alphabetical": ("name", 1),
+        "alphabetical_desc": ("name", -1)
+    }
+    
+    # Default to newest if invalid order_by provided
+    if order_by not in sort_mapping:
+        order_by = "newest"
+    
+    sort_field, sort_direction = sort_mapping[order_by]
+    
     communities = await db.communities.find(filter_query)\
-        .sort("created_at", -1)\
+        .sort(sort_field, sort_direction)\
         .skip(skip)\
         .limit(per_page)\
         .to_list(per_page)
@@ -491,5 +648,105 @@ async def get_user_communities(
             "name": user["name"],
             "username": user.get("username", "")
         },
-        "membership_type": membership_type or "all"
-          } 
+        "membership_type": membership_type or "all",
+        "order_by": order_by
+    }
+
+# PRESENCE ENDPOINTS
+
+@router.get("/{user_id}/presence")
+async def get_user_presence(user_id: str):
+    """Get user's current presence status"""
+    db = await get_database()
+    
+    # Find user by string ID first (Clerk ID), then by ObjectId if needed
+    user = await db.users.find_one({"_id": user_id})
+    if not user and ObjectId.is_valid(user_id):
+        user = await db.users.find_one({"_id": ObjectId(user_id)})
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Get user presence from presence collection
+    presence = await db.user_presence.find_one({"user_id": str(user["_id"])})
+    
+    if not presence:
+        # Create default offline presence if not exists
+        default_presence = {
+            "user_id": str(user["_id"]),
+            "status": PresenceStatus.OFFLINE,
+            "custom_message": None,
+            "last_seen": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        }
+        await db.user_presence.insert_one(default_presence)
+        presence = default_presence
+    
+    return PresenceResponse(
+        user_id=presence["user_id"],
+        status=presence["status"],
+        custom_message=presence.get("custom_message"),
+        last_seen=format_timestamp(presence["last_seen"]),
+        updated_at=format_timestamp(presence["updated_at"])
+    )
+
+@router.put("/{user_id}/presence")
+async def update_user_presence(
+    user_id: str,
+    presence_update: PresenceUpdate,
+    x_user_id: str = Header(..., description="User ID from Clerk (frontend)")
+):
+    """Update user's presence status"""
+    db = await get_database()
+    
+    # Validate Clerk user ID from header
+    if not x_user_id or len(x_user_id.strip()) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID from header"
+        )
+    
+    # Find user by string ID first (Clerk ID), then by ObjectId if needed
+    user = await db.users.find_one({"_id": user_id})
+    if not user and ObjectId.is_valid(user_id):
+        user = await db.users.find_one({"_id": ObjectId(user_id)})
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    actual_user_id = str(user["_id"])
+    
+    # Only allow users to update their own presence
+    if actual_user_id != x_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only update your own presence"
+        )
+    
+    # Update presence
+    now = datetime.utcnow()
+    update_data = {
+        "status": presence_update.status,
+        "custom_message": presence_update.custom_message,
+        "updated_at": now
+    }
+    
+    # Update last_seen if coming online
+    if presence_update.status == PresenceStatus.ONLINE:
+        update_data["last_seen"] = now
+    
+    # Upsert presence record
+    await db.user_presence.update_one(
+        {"user_id": actual_user_id},
+        {"$set": update_data},
+        upsert=True
+    )
+    
+    # Return updated presence
+    return await get_user_presence(actual_user_id) 

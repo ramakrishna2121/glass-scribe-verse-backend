@@ -1,12 +1,63 @@
-from fastapi import APIRouter, HTTPException, status, Query, Header
+from fastapi import APIRouter, HTTPException, status, Query, Header, File, UploadFile
 from app.database import get_database
 from app.models.blog import BlogCreate, BlogUpdate, BlogResponse
 from app.utils.helpers import convert_objectid_to_str, format_timestamp, sanitize_html
 from typing import Optional, List
 from datetime import datetime
 from bson import ObjectId
+import secrets
+from firebase_admin import storage as fb_storage
 
 router = APIRouter()
+
+# BLOG IMAGE UPLOAD ENDPOINT
+
+@router.post("/upload/image")
+async def upload_blog_image(
+    file: UploadFile = File(...),
+    x_user_id: str = Header(..., description="User ID from Clerk (frontend)")
+):
+    """Upload blog featured image to Firebase Storage"""
+    allowed_types = ["image/jpeg", "image/png", "image/jpg", "image/webp"]
+    if file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only JPEG, PNG, JPG, and WebP images are allowed"
+        )
+    
+    content = await file.read()
+    file_size = len(content)
+    if file_size > 10 * 1024 * 1024:  # 10MB limit for blog images
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File size must be less than 10MB"
+        )
+    
+    # Verify user exists
+    db = await get_database()
+    user = await db.users.find_one({"_id": x_user_id})
+    if not user and ObjectId.is_valid(x_user_id):
+        user = await db.users.find_one({"_id": ObjectId(x_user_id)})
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Upload to Firebase Storage
+    bucket = fb_storage.bucket()
+    file_extension = file.filename.split(".")[-1]
+    unique_filename = f"blog_images/{secrets.token_hex(16)}.{file_extension}"
+    blob = bucket.blob(unique_filename)
+    blob.upload_from_string(content, content_type=file.content_type)
+    blob.make_public()
+    file_url = blob.public_url
+    
+    return {
+        "url": file_url,
+        "filename": unique_filename,
+        "size": file_size
+    }
 
 @router.get("")
 async def get_blogs(
@@ -157,6 +208,137 @@ async def search_blogs(
         "page": page,
         "per_page": per_page,
         "query": q
+    }
+
+# BLOG CATEGORY MANAGEMENT ENDPOINTS
+
+@router.get("/categories")
+async def get_blog_categories():
+    """Get list of available blog categories"""
+    db = await get_database()
+    
+    # Get all active blog categories from database
+    blog_categories = await db.blog_categories.find({"is_active": True}).sort("name", 1).to_list(None)
+    
+    # If no categories exist, seed with default blog categories
+    if not blog_categories:
+        await seed_default_blog_categories(db)
+        blog_categories = await db.blog_categories.find({"is_active": True}).sort("name", 1).to_list(None)
+    
+    # Extract category names
+    categories = [cat["name"] for cat in blog_categories]
+    
+    return {"categories": categories}
+
+@router.get("/categories/detailed")
+async def get_detailed_blog_categories():
+    """Get detailed blog category information with blog counts"""
+    db = await get_database()
+    
+    # Get all active blog categories first
+    categories = await db.blog_categories.find({"is_active": True}).sort("name", 1).to_list(None)
+    
+    # Calculate blog counts for each category
+    for category in categories:
+        blog_count = await db.blogs.count_documents({
+            "category": category["name"]
+        })
+        category["blog_count"] = blog_count
+    
+    # If no categories exist, seed the database
+    if not categories:
+        await seed_default_blog_categories(db)
+        categories = await db.blog_categories.find({"is_active": True}).sort("name", 1).to_list(None)
+        # Calculate blog counts for seeded categories
+        for category in categories:
+            blog_count = await db.blogs.count_documents({
+                "category": category["name"]
+            })
+            category["blog_count"] = blog_count
+    
+    # Format response
+    formatted_categories = []
+    for cat in categories:
+        try:
+            created_at_formatted = format_timestamp(cat["created_at"]) if cat.get("created_at") else "Unknown"
+        except:
+            created_at_formatted = "Unknown"
+            
+        formatted_categories.append({
+            "id": str(cat["_id"]),
+            "name": cat["name"],
+            "slug": cat.get("slug", cat["name"].lower().replace(" ", "-")),
+            "description": cat.get("description", f"Blogs focused on {cat['name'].lower()}"),
+            "blog_count": cat.get("blog_count", 0),
+            "is_default": cat.get("is_default", False),
+            "created_at": created_at_formatted
+        })
+    
+    return {"categories": formatted_categories}
+
+@router.post("/categories")
+async def add_custom_blog_category(
+    category_name: str,
+    description: Optional[str] = None,
+    x_user_id: str = Header(..., description="User ID from Clerk (frontend)")
+):
+    """Add a custom blog category"""
+    db = await get_database()
+    
+    # Validate user exists
+    user = await db.users.find_one({"_id": x_user_id})
+    if not user and ObjectId.is_valid(x_user_id):
+        user = await db.users.find_one({"_id": ObjectId(x_user_id)})
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Validate category name
+    category_name = category_name.strip()
+    if len(category_name) < 2 or len(category_name) > 50:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Category name must be between 2 and 50 characters"
+        )
+    
+    # Check if category already exists (case-insensitive)
+    existing = await db.blog_categories.find_one({
+        "name": {"$regex": f"^{category_name}$", "$options": "i"},
+        "is_active": True
+    })
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Blog category already exists"
+        )
+    
+    # Create category slug
+    slug = category_name.lower().replace(" ", "-").replace("&", "and")
+    
+    # Add new blog category
+    category_doc = {
+        "name": category_name,
+        "slug": slug,
+        "description": description or f"Blogs focused on {category_name.lower()}",
+        "created_by": x_user_id,
+        "created_at": datetime.utcnow(),
+        "is_active": True,
+        "is_default": False,
+        "blog_count": 0
+    }
+    
+    result = await db.blog_categories.insert_one(category_doc)
+    
+    return {
+        "message": "Blog category added successfully",
+        "category": {
+            "id": str(result.inserted_id),
+            "name": category_name,
+            "slug": slug,
+            "description": category_doc["description"]
+        }
     }
 
 @router.get("/{blog_id}")
@@ -413,4 +595,44 @@ async def toggle_blog_upvote(
         "message": f"Upvote {action} successfully",
         "upvotes": updated_blog["upvotes"],
         "is_upvoted": not is_upvoted
-    } 
+    }
+
+
+
+async def seed_default_blog_categories(db):
+    """Seed database with default blog categories"""
+    default_blog_categories = [
+        "Technology", "Design", "Programming", "Web Development", "Mobile Development",
+        "Data Science", "AI & Machine Learning", "DevOps", "Cybersecurity", "UI/UX",
+        "Frontend", "Backend", "Full Stack", "JavaScript", "Python", "React", "Node.js",
+        "Tutorials", "Tips & Tricks", "Best Practices", "Career", "Freelancing",
+        "Startup", "Business", "Marketing", "Productivity", "Tools & Resources"
+    ]
+    
+    added_count = 0
+    
+    # Insert categories one by one to avoid duplicates
+    for category in default_blog_categories:
+        # Check if category already exists
+        existing = await db.blog_categories.find_one({
+            "name": category,
+            "is_active": True
+        })
+        
+        if not existing:
+            category_doc = {
+                "name": category,
+                "slug": category.lower().replace(" ", "-").replace("&", "and"),
+                "description": f"Blogs focused on {category.lower()}",
+                "created_by": "system",
+                "created_at": datetime.utcnow(),
+                "is_active": True,
+                "is_default": True,
+                "blog_count": 0
+            }
+            
+            await db.blog_categories.insert_one(category_doc)
+            added_count += 1
+    
+    if added_count > 0:
+        print(f"✅ Seeded {added_count} new default blog categories") 

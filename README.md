@@ -234,3 +234,17 @@ glass-scribe-verse-backend/
 └── README.md           # This file
 ```
 
+## Firebase Storage Setup (for Image Uploads)
+
+To enable image uploads to Firebase Storage, you need to:
+
+1. **Create a Firebase Project** and enable Cloud Storage.
+2. **Generate a Service Account Key** from the Firebase Console and download the JSON file.
+3. **Set the following environment variables** (in your `.env` file or system environment):
+   ```env
+   FIREBASE_CRED_PATH=path/to/your/firebase_service_account.json
+   FIREBASE_STORAGE_BUCKET=your-bucket-name.appspot.com
+   ```
+4. **Place the service account JSON file** in your project directory (or provide the correct path).
+5. The backend will now upload images to Firebase Storage and return public URLs.
+

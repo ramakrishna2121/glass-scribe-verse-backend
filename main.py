@@ -5,14 +5,53 @@ import os
 from dotenv import load_dotenv
 
 from app.database import connect_to_mongo, close_mongo_connection
-from app.routers import users, blogs, communities
+from app.routers import users, blogs, communities, channels
 
 load_dotenv()
+
+import firebase_admin
+from firebase_admin import credentials, storage as fb_storage
+import os
+
+firebase_creds = {
+    "type": os.getenv("FIREBASE_TYPE"),
+    "project_id": os.getenv("FIREBASE_PROJECT_ID"),
+    "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
+    "private_key": os.getenv("FIREBASE_PRIVATE_KEY").replace('\\n', '\n'),
+    "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
+    "client_id": os.getenv("FIREBASE_CLIENT_ID"),
+    "auth_uri": os.getenv("FIREBASE_AUTH_URI"),
+    "token_uri": os.getenv("FIREBASE_TOKEN_URI"),
+    "auth_provider_x509_cert_url": os.getenv("FIREBASE_AUTH_PROVIDER_X509_CERT_URL"),
+    "client_x509_cert_url": os.getenv("FIREBASE_CLIENT_X509_CERT_URL"),
+    "universe_domain": os.getenv("FIREBASE_UNIVERSE_DOMAIN"),
+}
+FIREBASE_STORAGE_BUCKET = os.getenv('FIREBASE_STORAGE_BUCKET', 'your-bucket-name.appspot.com')
+if not firebase_admin._apps:
+    cred = credentials.Certificate(firebase_creds)
+    firebase_admin.initialize_app(cred, {'storageBucket': FIREBASE_STORAGE_BUCKET})
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     await connect_to_mongo()
+    
+    # Initialize categories in database
+    from app.routers.communities import initialize_categories
+    await initialize_categories()
+    
+    # Initialize blog categories in database
+    from app.routers.blogs import seed_default_blog_categories
+    from app.database import get_database
+    db = await get_database()
+    blog_categories_count = await db.blog_categories.count_documents({"is_active": True})
+    if blog_categories_count == 0:
+        await seed_default_blog_categories(db)
+        print("✅ Blog categories initialized successfully")
+    else:
+        print(f"✅ Found {blog_categories_count} existing blog categories")
+    
     yield
     # Shutdown
     await close_mongo_connection()
@@ -43,6 +82,7 @@ app.add_middleware(
 app.include_router(users.router, prefix="/api/users", tags=["users"])
 app.include_router(blogs.router, prefix="/api/blogs", tags=["blogs"])
 app.include_router(communities.router, prefix="/api/communities", tags=["communities"])
+app.include_router(channels.router, prefix="/api/communities", tags=["channels"])
 
 @app.get("/")
 async def root():

@@ -16,6 +16,7 @@ class BlogBase(BaseModel):
     excerpt: str = Field(..., min_length=1, max_length=500)
     content: str = Field(..., min_length=1)
     category: str
+    featured_image: Optional[str] = None  # Firebase URL for blog featured image
 
 class BlogCreate(BlogBase):
     pass
@@ -25,6 +26,7 @@ class BlogUpdate(BaseModel):
     excerpt: Optional[str] = Field(None, min_length=1, max_length=500)
     content: Optional[str] = Field(None, min_length=1)
     category: Optional[str] = None
+    featured_image: Optional[str] = None  # Firebase URL for blog featured image
 
 class Blog(BlogBase):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
@@ -44,7 +46,8 @@ class Blog(BlogBase):
                 "title": "The Art of Minimalist Design",
                 "excerpt": "Exploring how less becomes more in modern UI/UX design philosophy.",
                 "content": "<p>Minimalism in design isn't just about using fewer elements...</p>",
-                "category": "Design"
+                "category": "Design",
+                "featured_image": "https://firebasestorage.googleapis.com/v0/b/glass-scribe.appspot.com/o/blog_images%2Fabc123.jpg?alt=media"
             }
         }
     )
@@ -59,6 +62,7 @@ class BlogResponse(BaseModel):
     upvotes: int
     timestamp: str
     is_upvoted: bool = False
+    featured_image: Optional[str] = None  # Firebase URL for blog featured image
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -77,7 +81,8 @@ class BlogResponse(BaseModel):
                 },
                 "upvotes": 128,
                 "timestamp": "2 days ago",
-                "is_upvoted": False
+                "is_upvoted": False,
+                "featured_image": "https://firebasestorage.googleapis.com/v0/b/glass-scribe.appspot.com/o/blog_images%2Fabc123.jpg?alt=media"
             }
         }
     ) 
