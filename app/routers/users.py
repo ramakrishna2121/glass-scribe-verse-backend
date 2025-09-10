@@ -11,6 +11,50 @@ from firebase_admin import storage as fb_storage
 
 router = APIRouter()
 
+# MISSING ENDPOINTS FOR FRONTEND
+
+@router.get("/{user_id}/communities")
+async def get_user_communities(
+    user_id: str,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=100)
+):
+    """Get communities for a specific user (used by frontend)"""
+    db = await get_database()
+    
+    # Find user by string ID first (Clerk ID), then by ObjectId if needed
+    user = await db.users.find_one({"_id": user_id})
+    if not user and ObjectId.is_valid(user_id):
+        user = await db.users.find_one({"_id": ObjectId(user_id)})
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    skip = (page - 1) * per_page
+    
+    # Get communities where user is a member
+    communities = await db.communities.find({"members": user_id})\
+        .sort("created_at", -1)\
+        .skip(skip)\
+        .limit(per_page)\
+        .to_list(per_page)
+    
+    total_count = await db.communities.count_documents({"members": user_id})
+    
+    # Format timestamps
+    for community in communities:
+        community["created_at"] = format_timestamp(community["created_at"])
+    
+    return {
+        "communities": convert_objectid_to_str(communities),
+        "total": total_count,
+        "page": page,
+        "per_page": per_page
+    }
+
 # USER AVATAR UPLOAD ENDPOINT
 
 @router.post("/upload/avatar")

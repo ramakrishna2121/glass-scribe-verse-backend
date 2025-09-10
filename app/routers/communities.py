@@ -1545,7 +1545,7 @@ async def stream_community_updates(
     community_id: str,
     channel_id: Optional[str] = Query(None, description="Filter by specific channel"),
     after: Optional[str] = Query(None, description="Get events after this message ID"),
-    x_user_id: str = Header(..., description="User ID from Clerk (frontend)")
+    x_user_id: Optional[str] = Header(None, description="User ID from Clerk (frontend)")
 ):
     """Server-Sent Events stream for real-time community updates"""
     
@@ -1564,7 +1564,8 @@ async def stream_community_updates(
             detail="Community not found"
         )
     
-    if x_user_id not in community.get("members", []):
+    # If user ID is provided, check membership
+    if x_user_id and x_user_id not in community.get("members", []):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You must be a member to receive updates"
